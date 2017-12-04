@@ -13,7 +13,7 @@ import { withState } from 'recompose';
 
 declare function require(name: string);
 
-import { mockSingleLink } from '../../../../../src/test-utils';
+import { MockLink, mockSingleLink } from '../../../../../src/test-utils';
 import { ApolloProvider, graphql } from '../../../../../src';
 
 function wait(ms) {
@@ -78,6 +78,79 @@ describe('[queries] lifecycle', () => {
       componentDidMount() {
         setTimeout(() => {
           count++;
+          this.setState({ first: 2 });
+        }, 50);
+      }
+
+      render() {
+        return <Container first={this.state.first} />;
+      }
+    }
+
+    renderer.create(
+      <ApolloProvider client={client}>
+        <ChangingProps />
+      </ApolloProvider>,
+    );
+  });
+
+  it('rebuilds the query on prop change when using `mapPropsToDocument` as query', done => {
+    const link = new MockLink([]);
+
+    const expectedData = [
+      { allPeople: { people: [{ name: 'Luke Skywalker' }] } },
+      { allPeople: { people: [{ name: 'Leia Skywalker' }] } },
+    ];
+
+    const query = props => {
+      const query = gql`
+        query people {
+          allPeople(first: ${props.first}) {
+            people {
+              name
+            }
+          }
+        }
+      `;
+
+      link.addMockedResponse({
+        request: { query, variables: {} },
+        result: { data: expectedData[props.first - 1] },
+      });
+
+      return query;
+    };
+
+    const client = new ApolloClient({
+      link,
+      cache: new Cache({ addTypename: false }),
+    });
+
+    @graphql(query)
+    class Container extends React.Component<any, any> {
+      componentWillReceiveProps({ data, first }) {
+        // loading is true, but data still there
+        if (!data.loading) {
+          if (first === 1) {
+            expect(data.allPeople).toEqual(expectedData[0].allPeople);
+          }
+
+          if (first === 2) {
+            expect(data.allPeople).toEqual(expectedData[1].allPeople);
+            done();
+          }
+        }
+      }
+      render() {
+        return null;
+      }
+    }
+
+    class ChangingProps extends React.Component<any, any> {
+      state = { first: 1 };
+
+      componentDidMount() {
+        setTimeout(() => {
           this.setState({ first: 2 });
         }, 50);
       }

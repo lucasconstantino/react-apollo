@@ -16,7 +16,7 @@ import ApolloClient, {
 
 import { ZenObservable } from 'zen-observable-ts';
 
-import { parser, DocumentType } from './parser';
+import { parser, DocumentType, IDocumentDefinition } from './parser';
 
 import { DocumentNode } from 'graphql';
 
@@ -69,7 +69,7 @@ export default function graphql<
   TProps = {},
   TChildProps = ChildProps<TProps, TResult>
 >(
-  document: DocumentNode,
+  document: DocumentNode | { (props: any): DocumentNode },
   operationOptions: OperationOption<TProps, TResult> = {},
 ): ComponentDecorator<TProps, TChildProps> {
   // extract options
@@ -88,8 +88,9 @@ export default function graphql<
 
   const mapResultToProps = operationOptions.props;
 
-  // safety check on the operation
-  const operation = parser(document);
+  const mapPropsToDocument = (props: any) => {
+    return typeof document === 'function' ? document(props) : document;
+  };
 
   // Helps track hot reloading.
   const version = nextVersion++;
@@ -113,6 +114,8 @@ export default function graphql<
       // data storage
       private client: ApolloClient<any>; // apollo client
       private type: DocumentType;
+      private document: DocumentNode;
+      private operation: IDocumentDefinition;
 
       // request / action storage. Note that we delete querySubscription if we
       // unsubscribe but never delete queryObservable once it is created. We
@@ -139,12 +142,14 @@ export default function graphql<
       constructor(props, context) {
         super(props, context);
 
+        this.document = mapPropsToDocument(props);
+        this.operation = parser(this.document);
+        this.type = this.operation.type;
+
         this.version = version;
-        this.type = operation.type;
         this.dataForChildViaMutation = this.dataForChildViaMutation.bind(this);
         this.setWrappedInstance = this.setWrappedInstance.bind(this);
       }
-
       componentWillMount() {
         if (!this.shouldSkip(this.props)) {
           this.setInitialProps();
@@ -186,9 +191,18 @@ export default function graphql<
           return;
         }
 
+        const oldDocument = this.document;
+
+        this.document = mapPropsToDocument(nextProps);
+        this.operation = parser(this.document);
+        this.type = this.operation.type;
+
         this.shouldRerender = true;
 
-        if (this.client !== client && this.client !== nextContext.client) {
+        if (
+          !shallowEqual(this.document, oldDocument) ||
+          (this.client !== client && this.client !== nextContext.client)
+        ) {
           if (client) {
             this.client = client;
           } else {
@@ -283,10 +297,10 @@ export default function graphql<
         }
         if (newOpts) opts = assign({}, opts, newOpts);
 
-        if (opts.variables || !operation.variables.length) return opts;
+        if (opts.variables || !this.operation.variables.length) return opts;
 
         let variables = {};
-        for (let { variable, type } of operation.variables) {
+        for (let { variable, type } of this.operation.variables) {
           if (!variable.name || !variable.name.value) continue;
 
           if (typeof props[variable.name.value] !== 'undefined') {
@@ -302,7 +316,7 @@ export default function graphql<
 
           invariant(
             typeof props[variable.name.value] !== 'undefined',
-            `The operation '${operation.name}' wrapping '${getDisplayName(
+            `The operation '${this.operation.name}' wrapping '${getDisplayName(
               WrappedComponent,
             )}' ` +
               `is expecting a variable: '${variable.name
@@ -344,7 +358,7 @@ export default function graphql<
       createQuery(opts: QueryOpts, props: any = this.props) {
         if (this.type === DocumentType.Subscription) {
           this.queryObservable = this.getClient(props).subscribe(
-            assign({ query: document }, opts),
+            assign({ query: this.document }, opts),
           );
         } else {
           // Try to reuse an `ObservableQuery` instance from our recycler. If
@@ -358,7 +372,7 @@ export default function graphql<
             this.queryObservable = this.getClient(props).watchQuery(
               assign(
                 {
-                  query: document,
+                  query: this.document,
                   metadata: {
                     reactComponent: {
                       displayName: graphQLDisplayName,
@@ -404,8 +418,8 @@ export default function graphql<
       fetchData(): Promise<ApolloQueryResult<any>> | boolean {
         if (this.shouldSkip()) return false;
         if (
-          operation.type === DocumentType.Mutation ||
-          operation.type === DocumentType.Subscription
+          this.operation.type === DocumentType.Mutation ||
+          this.operation.type === DocumentType.Subscription
         )
           return false;
 
@@ -419,7 +433,7 @@ export default function graphql<
         }
 
         const observable = this.getClient(this.props).watchQuery(
-          assign({ query: document }, opts),
+          assign({ query: this.document }, opts),
         );
         const result = observable.currentResult();
 
@@ -510,7 +524,7 @@ export default function graphql<
 
         if (typeof opts.variables === 'undefined') delete opts.variables;
 
-        (opts as any).mutation = document;
+        (opts as any).mutation = this.document;
         return this.getClient(this.props).mutate(opts as any) as Promise<
           ApolloQueryResult<TResult>
         >;
